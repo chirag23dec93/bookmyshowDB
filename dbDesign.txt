@@ -1,1 +1,272 @@
+| Entity       | Description                                                         |
+| ------------ | ------------------------------------------------------------------- |
+| `theatre`    | A cinema complex (name, location)                                   |
+| `auditorium` | A hall/screen inside a theatre (name, seat\_count)                  |
+| `movie`      | A film (title, duration, language)                                  |
+| `show`       | A scheduled screening: ties a `movie` → `auditorium` → `start_time` |
+| `seat`       | A seat in an `auditorium` (row, number, type)                       |
+| `booking`    | A customer’s reservation for one or more `show_seat`s               |
+| `show_seat`  | A join table: availability/reservation per `show`+`seat`            |
+
+
+
+1. Theatre (1NF→3NF→BCNF)
+CREATE TABLE theatre (
+  theatre_id   BIGSERIAL PRIMARY KEY,
+  name         VARCHAR(255) NOT NULL,
+  city         VARCHAR(100) NOT NULL,
+  address      TEXT NOT NULL
+);
+
+2. Auditorium
+CREATE TABLE auditorium (
+  auditorium_id BIGSERIAL PRIMARY KEY,
+  theatre_id    BIGINT NOT NULL REFERENCES theatre(theatre_id),
+  name          VARCHAR(100) NOT NULL,
+  seat_count    INT NOT NULL,
+  UNIQUE (theatre_id, name)
+);
+
+3. Movie
+CREATE TABLE movie (
+  movie_id     BIGSERIAL PRIMARY KEY,
+  title        VARCHAR(255) NOT NULL,
+  duration_min INT NOT NULL,           -- runtime in minutes
+  language     VARCHAR(50) NOT NULL,
+  UNIQUE (title, language)
+);
+
+4. Show
+CREATE TABLE show (
+  show_id         BIGSERIAL PRIMARY KEY,
+  auditorium_id   BIGINT NOT NULL REFERENCES auditorium(auditorium_id),
+  movie_id        BIGINT NOT NULL REFERENCES movie(movie_id),
+  show_date       DATE NOT NULL,
+  start_time      TIME NOT NULL,
+  end_time        TIME GENERATED ALWAYS AS (start_time + (duration_min || ' minutes')::interval) STORED,
+  UNIQUE (auditorium_id, show_date, start_time)
+);
+
+5. Seat
+CREATE TABLE seat (
+  seat_id       BIGSERIAL PRIMARY KEY,
+  auditorium_id BIGINT NOT NULL REFERENCES auditorium(auditorium_id),
+  row_label     VARCHAR(5) NOT NULL,
+  seat_number   INT NOT NULL,
+  seat_type     VARCHAR(20) NOT NULL,    -- e.g. REGULAR, PREMIUM
+  UNIQUE (auditorium_id, row_label, seat_number)
+);
+
+6. Booking
+CREATE TABLE booking (
+  booking_id    BIGSERIAL PRIMARY KEY,
+  show_id       BIGINT NOT NULL REFERENCES show(show_id),
+  customer_email VARCHAR(255) NOT NULL,
+  booked_at     TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+7. Show_Seat (availability & reservation)
+CREATE TABLE show_seat (
+  show_id   BIGINT NOT NULL REFERENCES show(show_id),
+  seat_id   BIGINT NOT NULL REFERENCES seat(seat_id),
+  is_booked BOOLEAN NOT NULL DEFAULT FALSE,
+  booking_id BIGINT REFERENCES booking(booking_id),
+  PRIMARY KEY (show_id, seat_id)
+);
+
+
+P2: List all shows + timings for theatre_id = :theatreId on :targetDate
+
+SELECT
+  s.show_id,
+  m.title        AS movie_title,
+  s.start_time,
+  s.end_time,
+  a.name         AS auditorium_name,
+  COUNT(ss.seat_id) FILTER (WHERE ss.is_booked = FALSE) AS available_seats
+FROM show s
+JOIN auditorium a   ON s.auditorium_id = a.auditorium_id
+JOIN theatre t      ON a.theatre_id = t.theatre_id
+JOIN movie m        ON s.movie_id = m.movie_id
+LEFT JOIN show_seat ss
+  ON ss.show_id = s.show_id
+WHERE t.theatre_id = :theatreId
+  AND s.show_date = :targetDate
+GROUP BY s.show_id, m.title, s.start_time, s.end_time, a.name
+ORDER BY s.start_time;
+
+
+
+4. Normal Forms Verification
+
+1NF: All tables have atomic columns and no repeating groups.
+
+2NF: No partial dependencies—every non-PK attribute depends on the full PK.
+
+3NF: No transitive dependencies—e.g., theatre info separated from auditorium, movie info separated from show.
+
+BCNF: All determinants are candidate keys (e.g., (auditorium_id, show_date, start_time) is unique in show).
+
+
+Below is a breakdown of each table’s key and functional dependencies, showing why each satisfies Boyce–Codd Normal Form (BCNF)
+
+
+### 1. `theatre`
+
+```sql
+CREATE TABLE theatre (
+  theatre_id   BIGSERIAL PRIMARY KEY,
+  name         VARCHAR(255) NOT NULL,
+  city         VARCHAR(100) NOT NULL,
+  address      TEXT NOT NULL
+);
+```
+
+* Key: `theatre_id`
+* Other candidate keys:** none (we assume name+city isn’t unique across cities).
+* Dependencies:
+  * theatre_id → name, city, address
+* Check BCNF:** The only dependency is from the primary key to other attributes. No non-key attribute functionally determines anything else. → **BCNF**
+
+ 2. auditorium
+
+CREATE TABLE auditorium (
+  auditorium_id BIGSERIAL PRIMARY KEY,
+  theatre_id    BIGINT NOT NULL REFERENCES theatre(theatre_id),
+  name          VARCHAR(100) NOT NULL,
+  seat_count    INT NOT NULL,
+  UNIQUE (theatre_id, name)
+);
+
+* Keys:
+
+  * Primary key: auditorium_id
+  * Alternate key: (theatre_id, name)
+
+* Dependencies:
+
+  1. auditorium_id → theatre_id, name, seat_count
+  2. (theatre_id, name) → auditorium_id, seat_count (because of UNIQUE)
+
+* Check BCNF:
+
+  * In (1), determinant `auditorium_id` is a key.
+  * In (2), determinant `(theatre_id, name)` is a candidate key.
+  * No other non-key → attribute dependencies. → BCNF
+
+3. movie
+
+CREATE TABLE movie (
+  movie_id     BIGSERIAL PRIMARY KEY,
+  title        VARCHAR(255) NOT NULL,
+  duration_min INT NOT NULL,
+  language     VARCHAR(50) NOT NULL,
+  UNIQUE (title, language)
+);
+
+* Keys:
+  * Primary key: movie_id
+  * Alternate key: (title, language)
+
+* Dependencies:
+
+  1. movie_id → title, duration_min, language
+  2. (title, language) → movie_id, duration_min
+
+* Check BCNF:
+  * Determinants in both dependencies are keys (primary or alternate).
+  * No non-key attribute determines another. → BCNF
+
+4. show
+
+CREATE TABLE show (
+  show_id         BIGSERIAL PRIMARY KEY,
+  auditorium_id   BIGINT NOT NULL REFERENCES auditorium(auditorium_id),
+  movie_id        BIGINT NOT NULL REFERENCES movie(movie_id),
+  show_date       DATE NOT NULL,
+  start_time      TIME NOT NULL,
+  end_time        TIME GENERATED AS (start_time + …) STORED,
+  UNIQUE (auditorium_id, show_date, start_time)
+);
+
+* Keys:
+
+  * Primary key: show_id
+  * Alternate (composite) key: (auditorium_id, show_date, start_time)
+
+* Dependencies:
+
+  1. show_id → auditorium_id, movie_id, show_date, start_time, end_time
+  2. (auditorium_id, show_date, start_time) → show_id, movie_id, end_time
+  3. start_time, duration_min → end_time (but `duration_min` isn’t a column here—`end_time` uses `movie.duration_min`. No transitive via local columns.)
+
+* Check BCNF:
+  * In (1) and (2), determinants are keys.
+  * `end_time` depends on `start_time` and the referenced movie’s duration—but that’s a cross-table derivation, not a local FD. Local FDs all have key determinants. → BCNF
+
+---
+
+### 5. `seat`
+
+```sql
+CREATE TABLE seat (
+  seat_id       BIGSERIAL PRIMARY KEY,
+  auditorium_id BIGINT NOT NULL REFERENCES auditorium(auditorium_id),
+  row_label     VARCHAR(5) NOT NULL,
+  seat_number   INT NOT NULL,
+  seat_type     VARCHAR(20) NOT NULL,
+  UNIQUE (auditorium_id, row_label, seat_number)
+);
+```
+
+* Keys:
+
+  * Primary key: seat_id
+  * Alternate key: (auditorium_id, row_label, seat_number)
+
+* Dependencies:
+  1. `seat_id → auditorium_id, row_label, seat_number, seat_type`
+  2. `(auditorium_id, row_label, seat_number) → seat_id, seat_type`
+* Check BCNF:
+  * Determinants are keys.
+  * No non-key attribute determines another. → BCNF
+
+6. booking
+CREATE TABLE booking (
+  booking_id    BIGSERIAL PRIMARY KEY,
+  show_id       BIGINT NOT NULL REFERENCES show(show_id),
+  customer_email VARCHAR(255) NOT NULL,
+  booked_at     TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+* Key: `booking_id`
+
+* Dependencies:
+  * `booking_id → show_id, customer_email, booked_at`
+
+* Check BCNF:
+   The only FD is from the primary key to other attributes. No non-key attribute (e.g. `customer_email`) functionally determines anything. → **BCNF**
+
+
+7. show_seat
+
+sql
+CREATE TABLE show_seat (
+  show_id    BIGINT NOT NULL REFERENCES show(show_id),
+  seat_id    BIGINT NOT NULL REFERENCES seat(seat_id),
+  is_booked  BOOLEAN NOT NULL DEFAULT FALSE,
+  booking_id BIGINT REFERENCES booking(booking_id),
+  PRIMARY KEY (show_id, seat_id)
+);
+
+* Key: composite `(show_id, seat_id)`
+
+* Dependencies:
+  1. (show_id, seat_id) → is_booked, booking_id
+
+* Check BCNF:
+  * The only FD has determinant `(show_id, seat_id)`, which is the primary key.
+  * There are no other dependencies (e.g. `booking_id` is nullable and simply references `booking`). → **BCNF**
+
+
 
